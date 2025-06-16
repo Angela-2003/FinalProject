@@ -1,75 +1,115 @@
-import { Image } from 'expo-image';
-import { Platform, StyleSheet } from 'react-native';
+import React, { useState, useEffect } from 'react';
+import { View, Text, FlatList, ActivityIndicator, StyleSheet } from 'react-native';
+import { Audio } from 'expo-av';
+import { Stack, useRouter } from 'expo-router';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 
-import { HelloWave } from '@/components/HelloWave';
-import ParallaxScrollView from '@/components/ParallaxScrollView';
-import { ThemedText } from '@/components/ThemedText';
-import { ThemedView } from '@/components/ThemedView';
+import MoodButton from '../../components/MoodButton';
+import TrackCard, { Track } from '../../components/TrackCard';
 
-export default function HomeScreen() {
+const MOODS = ['happy','sad','angry','tired'] as const;
+type Mood = typeof MOODS[number];
+const moodQuery: Record<Mood,string> = {
+  happy: 'happy',
+  sad:   'everything will be better',
+  angry: 'hard rock',
+  tired: 'slow down',
+};
+
+export default function MoodScreen() {
+  const [selectedMood, setSelectedMood] = useState<Mood | null>(null);
+  const [tracks, setTracks] = useState<Track[]>([]);
+  const [loading, setLoading] = useState<boolean>(false);
+  const [sound, setSound] = useState<Audio.Sound | null>(null);
+  const router = useRouter();
+
+  useEffect(() => {
+    if (!selectedMood) return;
+    (async () => {
+      setLoading(true);
+      try {
+        const term = encodeURIComponent(moodQuery[selectedMood]);
+        const res  = await fetch(`https://itunes.apple.com/search?term=${term}&entity=song&limit=10`);
+        const json = (await res.json()) as { results: Track[] };
+        setTracks(json.results);
+      } catch (e) {
+        console.warn(e);
+        setTracks([]);
+      } finally {
+        setLoading(false);
+      }
+    })();
+  }, [selectedMood]);
+
+  // unified “play & save to history” handler
+  const playPreview = async (track: Track) => {
+    // 1) play
+    if (sound) {
+      await sound.unloadAsync();
+      setSound(null);
+    }
+    const { sound: newSound } = await Audio.Sound.createAsync(
+      { uri: track.previewUrl },
+      { shouldPlay: true }
+    );
+    setSound(newSound);
+
+    // 2) store in AsyncStorage
+    const entry = {
+      trackId:   track.trackId,
+      trackName: track.trackName,
+      artist:    track.artistName,
+      playedAt:  new Date().toISOString(),
+    };
+    const raw  = await AsyncStorage.getItem('history');
+    const hist = raw ? JSON.parse(raw) as any[] : [];
+    hist.unshift(entry);
+    // keep only the most recent 50 entries
+    await AsyncStorage.setItem('history', JSON.stringify(hist.slice(0,50)));
+  };
+
+  // Pause the current music
+  const pausePreview = async () => {
+    if (sound) {
+      await sound.pauseAsync();
+    }
+  };
+
   return (
-    <ParallaxScrollView
-      headerBackgroundColor={{ light: '#A1CEDC', dark: '#1D3D47' }}
-      headerImage={
-        <Image
-          source={require('@/assets/images/partial-react-logo.png')}
-          style={styles.reactLogo}
-        />
-      }>
-      <ThemedView style={styles.titleContainer}>
-        <ThemedText type="title">Welcome!</ThemedText>
-        <HelloWave />
-      </ThemedView>
-      <ThemedView style={styles.stepContainer}>
-        <ThemedText type="subtitle">Step 1: Try it</ThemedText>
-        <ThemedText>
-          Edit <ThemedText type="defaultSemiBold">app/(tabs)/index.tsx</ThemedText> to see changes.
-          Press{' '}
-          <ThemedText type="defaultSemiBold">
-            {Platform.select({
-              ios: 'cmd + d',
-              android: 'cmd + m',
-              web: 'F12',
-            })}
-          </ThemedText>{' '}
-          to open developer tools.
-        </ThemedText>
-      </ThemedView>
-      <ThemedView style={styles.stepContainer}>
-        <ThemedText type="subtitle">Step 2: Explore</ThemedText>
-        <ThemedText>
-          {`Tap the Explore tab to learn more about what's included in this starter app.`}
-        </ThemedText>
-      </ThemedView>
-      <ThemedView style={styles.stepContainer}>
-        <ThemedText type="subtitle">Step 3: Get a fresh start</ThemedText>
-        <ThemedText>
-          {`When you're ready, run `}
-          <ThemedText type="defaultSemiBold">npm run reset-project</ThemedText> to get a fresh{' '}
-          <ThemedText type="defaultSemiBold">app</ThemedText> directory. This will move the current{' '}
-          <ThemedText type="defaultSemiBold">app</ThemedText> to{' '}
-          <ThemedText type="defaultSemiBold">app-example</ThemedText>.
-        </ThemedText>
-      </ThemedView>
-    </ParallaxScrollView>
+    <>
+      <Stack.Screen options={{ title: 'Mood Tunes' }} />
+      <View style={styles.container}>
+        <Text style={styles.header}>How are you feeling?</Text>
+        <View style={styles.row}>
+          {MOODS.map((mood) => (
+            <MoodButton
+              key={mood}
+              mood={mood}
+              isActive={selectedMood === mood}
+              onPress={() => setSelectedMood(mood)}
+            />
+          ))}
+        </View>
+
+        {loading && <ActivityIndicator style={{ marginTop: 20 }} size="large" />}
+
+        {!loading && selectedMood && (
+          <FlatList
+            data={tracks}
+            keyExtractor={(t) => t.trackId.toString()}
+            renderItem={({ item }) => (
+              <TrackCard track={item} onPlay={playPreview} onPause={pausePreview} />
+            )}
+            style={{ marginTop: 20 }}
+          />
+        )}
+      </View>
+    </>
   );
 }
 
 const styles = StyleSheet.create({
-  titleContainer: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-  },
-  stepContainer: {
-    gap: 8,
-    marginBottom: 8,
-  },
-  reactLogo: {
-    height: 178,
-    width: 290,
-    bottom: 0,
-    left: 0,
-    position: 'absolute',
-  },
+  container: { flex: 1, padding: 16, backgroundColor: '#fff' },
+  header:    { fontSize: 24, fontWeight: 'bold', marginVertical: 16 },
+  row:       { flexDirection: 'row', justifyContent: 'space-around' },
 });
